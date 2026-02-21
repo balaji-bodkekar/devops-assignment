@@ -1,0 +1,52 @@
+FROM python:3.11-slim-bookworm AS builder
+
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+
+WORKDIR /src
+
+# Install minimal build deps, upgrade pip, install python packages into /install
+COPY requirements.txt .
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends build-essential ca-certificates; \
+	rm -rf /var/lib/apt/lists/*; \
+	python -m pip install --upgrade pip setuptools wheel; \
+	pip install --prefix=/install -r requirements.txt
+
+# Copy application sources
+COPY backend/ /src
+
+# Make runtime-friendly ownership (match nonroot UID used in final image)
+RUN chown -R 1000:1000 /install /src
+
+
+
+FROM python:3.11-slim-bookworm
+WORKDIR /app
+
+ENV PATH=/usr/local/bin:$PATH
+
+# create nonroot group/user matching builder UID
+RUN groupadd -g 1000 nonroot || true && useradd -r -u 1000 -g nonroot nonroot || true
+
+# Copy installed packages and app from builder
+
+# Copy installed packages and app from builder
+COPY --from=builder /install /usr/local
+COPY --from=builder /src /app
+COPY requirements.txt /tmp/requirements.txt
+
+# Install runtime requirements to ensure console-scripts and deps are available
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt \
+	&& rm -f /tmp/requirements.txt
+
+# ensure installed files are owned by the runtime user
+RUN chown -R 1000:1000 /usr/local /app || true
+
+# run as the non-root user
+USER nonroot
+
+# Run Celery worker (use appropriate concurrency via env or celery flags)
+ENTRYPOINT []
+
+CMD ["/usr/local/bin/celery", "-A", "worker", "worker", "--loglevel=info"]
